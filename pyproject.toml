@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lodestar"
+version = "0.1.0"
+description = "Local-first repository context tool for agents."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "Tino" }
+]
+license = { text = "MIT" }
+keywords = ["agents", "mcp", "sqlite", "indexing", "context"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+
+[project.optional-dependencies]
+embeddings = [
+  "sentence-transformers>=3.0",
+]
+parsers = [
+  "tree-sitter>=0.23",
+  "tree-sitter-python>=0.23",
+  "tree-sitter-javascript>=0.23",
+  "tree-sitter-typescript>=0.23",
+  "tree-sitter-go>=0.23",
+  "tree-sitter-rust>=0.23",
+  "tree-sitter-java>=0.23",
+  "tree-sitter-ruby>=0.23",
+  "tree-sitter-php>=0.23",
+]
+
+[project.scripts]
+lodestar = "lodestar.cli:main"
+lodestar-mcp = "lodestar.mcp_server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

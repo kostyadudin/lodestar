@@ -1,0 +1,13 @@
+.DS_Store
+.idea/
+.lodestar/
+.claude/
+.dev/
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+*.pyc
+*.local.*
+.mcp.json
