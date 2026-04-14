@@ -106,7 +106,7 @@ You can also use the included wrapper script:
 For Claude Desktop, a repo-local wrapper is available:
 
 ```bash
-/path/to/LocalRAG/scripts/lodestar-mcp-stdio
+/path/to/lodestar/scripts/lodestar-mcp-stdio
 ```
 
 Example Claude Desktop config:
@@ -115,7 +115,7 @@ Example Claude Desktop config:
 {
   "mcpServers": {
     "lodestar": {
-      "command": "/path/to/LocalRAG/scripts/lodestar-mcp-stdio"
+      "command": "/path/to/lodestar/scripts/lodestar-mcp-stdio"
     }
   }
 }
