@@ -195,6 +195,53 @@ def cosineish_score(query_terms: Counter[str], text: str) -> float:
     return overlap / max(sum(query_terms.values()), 1)
 
 
+def fts_find_symbol_refs(conn, symbol_name: str, exclude_path: str | None = None) -> list[dict]:
+    """Search FTS chunks for whole-word occurrences of *symbol_name*.
+
+    Returns a list of ``{path, line_start, line_end, context}`` dicts for each
+    chunk that contains the symbol name as a whole word, excluding the file
+    where the symbol is defined (*exclude_path*).
+    """
+    import sqlite3
+
+    fts_term = fts_query(symbol_name)
+    if not fts_term:
+        return []
+
+    boundary = re.compile(r"\b" + re.escape(symbol_name) + r"\b")
+    hits: list[dict] = []
+    try:
+        rows = conn.execute(
+            "SELECT c.path, c.line_start, c.line_end, c.text "
+            "FROM fts_chunks fc "
+            "JOIN chunks c ON fc.chunk_id = c.chunk_id "
+            "WHERE fts_chunks MATCH ?",
+            (fts_term,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    for row in rows:
+        if exclude_path and row["path"] == exclude_path:
+            continue
+        if not boundary.search(row["text"]):
+            continue
+        # Extract the first matching line as context
+        for line in row["text"].splitlines():
+            if boundary.search(line):
+                context = line.strip()[:160]
+                break
+        else:
+            context = row["text"].splitlines()[0].strip()[:160]
+        hits.append({
+            "path": row["path"],
+            "line_start": row["line_start"],
+            "line_end": row["line_end"],
+            "context": context,
+        })
+    return hits
+
+
 def _extract_python_symbols(rel_path: str, content: str) -> list[dict]:
     try:
         tree = ast.parse(content)

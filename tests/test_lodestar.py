@@ -83,5 +83,38 @@ class LodestarServiceTests(unittest.TestCase):
         self.assertTrue(context["memories"][0]["stale"])
 
 
+    def test_find_usages_detects_used_and_unused_symbols(self) -> None:
+        # Create files: one defines a class, another uses it, a third defines an unused interface
+        (self.root / "src" / "models.py").write_text(
+            "class UserAccount:\n    name: str\n\nclass OrphanedType:\n    pass\n",
+            encoding="utf-8",
+        )
+        (self.root / "src" / "service.py").write_text(
+            "from models import UserAccount\n\ndef get_user() -> UserAccount:\n    return UserAccount()\n",
+            encoding="utf-8",
+        )
+        self.service.index(str(self.root))
+
+        # UserAccount is used in service.py
+        result = self.service.find_usages(str(self.root), "UserAccount")
+        self.assertTrue(result["results"])
+        ua = result["results"][0]
+        self.assertFalse(ua["is_unused"])
+        self.assertGreater(ua["usage_count"], 0)
+
+        # OrphanedType is never referenced outside its definition
+        result = self.service.find_usages(str(self.root), "OrphanedType")
+        self.assertTrue(result["results"])
+        orphan = result["results"][0]
+        self.assertTrue(orphan["is_unused"])
+        self.assertEqual(orphan["usage_count"], 0)
+
+    def test_find_usages_nonexistent_symbol(self) -> None:
+        self.service.index(str(self.root))
+        result = self.service.find_usages(str(self.root), "NonExistentSymbol")
+        self.assertFalse(result["results"])
+        self.assertIn("error", result)
+
+
 if __name__ == "__main__":
     unittest.main()

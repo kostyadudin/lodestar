@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections import Counter
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from .analyzer import (
     cosineish_score,
     derive_subsystems,
     extract_symbols,
+    fts_find_symbol_refs,
     fts_query,
     query_vector,
     subsystem_name_for_path,
@@ -435,6 +437,129 @@ class LodestarService:
         self._clear_query_cache(conn)
         conn.commit()
         return {"memory_id": cursor.lastrowid, "title": title, "created_at": created_at, "last_validated_at": created_at}
+
+    def find_usages(self, repo_root: str, symbol: str, scope: str | None = None) -> dict:
+        """Find all usages of a symbol across the indexed codebase."""
+        t0 = time.perf_counter()
+        root = self._repo_root(repo_root)
+        conn = connect(self._ensure_state(root) / DB_FILENAME)
+
+        # Resolve symbol: accept full symbol_id or plain name
+        if symbol.startswith("symbol:"):
+            symbol_rows = conn.execute(
+                "SELECT symbol_id, path, name, kind, line_start FROM symbols WHERE symbol_id = ?",
+                (symbol,),
+            ).fetchall()
+        else:
+            symbol_rows = conn.execute(
+                "SELECT symbol_id, path, name, kind, line_start FROM symbols WHERE name = ?",
+                (symbol,),
+            ).fetchall()
+
+        if not symbol_rows:
+            return {
+                "results": [],
+                "error": f"No symbol found matching {symbol!r}",
+                "elapsed_ms": round((time.perf_counter() - t0) * 1000),
+            }
+
+        results = []
+        for sym in symbol_rows:
+            sym_id = sym["symbol_id"]
+            def_path = sym["path"]
+
+            # 1. Relations pointing to this symbol
+            relation_refs: list[dict] = []
+            seen_paths: set[str] = set()
+            for rel in conn.execute(
+                "SELECT source_ref, relation_type FROM relations WHERE target_ref = ?",
+                (sym_id,),
+            ):
+                src = rel["source_ref"]
+                src_path = src.split(":", 2)[1] if src.startswith("symbol:") else src.removeprefix("file:")
+                if scope and not src_path.startswith(scope):
+                    continue
+                if src_path == def_path:
+                    continue
+                seen_paths.add(src_path)
+                relation_refs.append({
+                    "path": src_path,
+                    "ref": src,
+                    "relation_type": rel["relation_type"],
+                    "source": "relation",
+                })
+
+            # Also check file-level import relations targeting the definition file
+            for rel in conn.execute(
+                "SELECT source_ref FROM relations WHERE target_ref = ? AND relation_type = 'imports'",
+                (f"file:{def_path}",),
+            ):
+                src_path = rel["source_ref"].removeprefix("file:")
+                if scope and not src_path.startswith(scope):
+                    continue
+                if src_path in seen_paths or src_path == def_path:
+                    continue
+                # Verify the importing file actually mentions the symbol name
+                chunk = conn.execute(
+                    "SELECT text FROM chunks WHERE path = ? ORDER BY line_start LIMIT 1",
+                    (src_path,),
+                ).fetchone()
+                if chunk and re.search(r"\b" + re.escape(sym["name"]) + r"\b", chunk["text"]):
+                    seen_paths.add(src_path)
+                    relation_refs.append({
+                        "path": src_path,
+                        "ref": rel["source_ref"],
+                        "relation_type": "imports",
+                        "source": "relation",
+                    })
+
+            # 2. FTS search for cross-file occurrences
+            fts_hits = fts_find_symbol_refs(conn, sym["name"], exclude_path=def_path)
+            fts_refs: list[dict] = []
+            for hit in fts_hits:
+                if scope and not hit["path"].startswith(scope):
+                    continue
+                if hit["path"] in seen_paths:
+                    continue
+                seen_paths.add(hit["path"])
+                fts_refs.append({
+                    "path": hit["path"],
+                    "line": hit["line_start"],
+                    "context": hit["context"],
+                    "source": "fts",
+                })
+
+            # Merge: relation hits first, then FTS hits
+            references = []
+            for ref in relation_refs:
+                references.append({
+                    "path": ref["path"],
+                    "relation_type": ref.get("relation_type"),
+                    "source": ref["source"],
+                })
+            for ref in fts_refs:
+                references.append({
+                    "path": ref["path"],
+                    "line": ref.get("line"),
+                    "context": ref.get("context"),
+                    "source": ref["source"],
+                })
+
+            usage_count = len(references)
+            results.append({
+                "symbol_id": sym_id,
+                "symbol_name": sym["name"],
+                "kind": sym["kind"],
+                "definition": {"path": def_path, "line": sym["line_start"]},
+                "references": references,
+                "usage_count": usage_count,
+                "is_unused": usage_count == 0,
+            })
+
+        return {
+            "results": results,
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000),
+        }
 
     def _repo_root(self, repo_root: str) -> Path:
         root = Path(repo_root).expanduser().resolve()

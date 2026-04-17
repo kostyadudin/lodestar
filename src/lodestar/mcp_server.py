@@ -138,6 +138,12 @@ class MCPServer:
                     req("summary"),
                     evidence_refs=arguments.get("evidence_refs"),
                 )
+            case "project.find_usages":
+                return self.service.find_usages(
+                    req("repo_root"),
+                    req("symbol"),
+                    scope=arguments.get("scope"),
+                )
             case _:
                 raise ValueError(f"Unknown tool: {name!r}")
 
@@ -272,6 +278,19 @@ _TOOL_DEFS: list[dict[str, Any]] = [
                 "evidence_refs": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["repo_root", "title", "summary"],
+        },
+    },
+    {
+        "name": "project.find_usages",
+        "description": "Find all references to a symbol and flag unused symbols",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo_root": {"type": "string"},
+                "symbol": {"type": "string", "description": "Symbol name or full symbol_id"},
+                "scope": {"type": "string", "description": "Optional path prefix to limit search"},
+            },
+            "required": ["repo_root", "symbol"],
         },
     },
 ]
