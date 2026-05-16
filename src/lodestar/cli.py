@@ -123,6 +123,12 @@ def build_parser() -> argparse.ArgumentParser:
     retrieve_cmd.add_argument("--budget", type=int, default=None)
     retrieve_cmd.add_argument("--scope")
 
+    pack_cmd = sub.add_parser("pack", help="Emit a token-budgeted JSON context bundle")
+    pack_cmd.add_argument("repo_root")
+    pack_cmd.add_argument("query")
+    pack_cmd.add_argument("--budget", type=int, default=None)
+    pack_cmd.add_argument("--scope")
+
     explain_cmd = sub.add_parser("explain", help="Explain a subject using indexed context")
     explain_cmd.add_argument("repo_root")
     explain_cmd.add_argument("subject")
@@ -133,6 +139,22 @@ def build_parser() -> argparse.ArgumentParser:
     remember_cmd.add_argument("title")
     remember_cmd.add_argument("summary")
     remember_cmd.add_argument("--evidence", action="append", default=[])
+
+    timeline_cmd = sub.add_parser("timeline", help="Show chronological deltas across code, memories, and staleness")
+    timeline_cmd.add_argument("repo_root")
+    timeline_cmd.add_argument("--since", default=None, help="ISO timestamp or 'last_index'/'last_refresh' (omit for full history)")
+    timeline_cmd.add_argument("--scope", default=None, help="Comma-separated subset of: code,memory,stale")
+
+    capture_cmd = sub.add_parser("capture", help="Capture a transcript or pre-structured JSON into the memory store (dry-run by default)")
+    capture_cmd.add_argument("repo_root")
+    capture_cmd.add_argument("--from", dest="input_format", choices=["json", "claude-jsonl"], required=True)
+    capture_cmd.add_argument("--source", required=True, help="Path to file, or '-' for stdin")
+    capture_cmd.add_argument("--commit", action="store_true", help="Persist memories (default: dry-run)")
+
+    locate_cmd = sub.add_parser("locate-symbol", help="Locate symbol byte/line ranges by name")
+    locate_cmd.add_argument("repo_root")
+    locate_cmd.add_argument("symbol", help="Symbol name (e.g. 'fn_name' or 'Class.method')")
+    locate_cmd.add_argument("--file", default=None, help="Optional glob to filter files (fnmatch)")
 
     eval_cmd = sub.add_parser("eval", help="Run a recall evaluation against the index")
     eval_cmd.add_argument("repo_root")
@@ -159,6 +181,15 @@ def main() -> int:
             payload = service.search(args.repo_root, args.query, kind=args.kind, limit=args.limit)
         case "retrieve":
             payload = service.retrieve(args.repo_root, args.query, budget_tokens=args.budget, scope=args.scope)
+        case "pack":
+            payload = service.pack(args.repo_root, args.query, budget_tokens=args.budget, scope=args.scope)
+        case "timeline":
+            scope_list = [s.strip() for s in args.scope.split(",")] if args.scope else None
+            payload = service.timeline(args.repo_root, since=args.since, scope=scope_list)
+        case "capture":
+            payload = service.capture(args.repo_root, args.source, args.input_format, commit=args.commit)
+        case "locate-symbol":
+            payload = service.locate_symbol_range(args.repo_root, args.symbol, file=args.file)
         case "explain":
             payload = service.explain(args.repo_root, args.subject, depth=args.depth)
         case "remember":

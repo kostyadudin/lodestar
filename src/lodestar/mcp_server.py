@@ -56,7 +56,7 @@ class MCPServer:
                 "id": msg_id,
                 "result": {
                     "protocolVersion": "2025-11-25",
-                    "serverInfo": {"name": "lodestar", "version": "0.1.0"},
+                    "serverInfo": {"name": "lodestar", "version": "0.2.0"},
                     "capabilities": {"tools": {}},
                 },
             }
@@ -124,6 +124,32 @@ class MCPServer:
                     req("query"),
                     budget_tokens=arguments.get("budget_tokens"),
                     scope=arguments.get("scope"),
+                )
+            case "project.pack":
+                return self.service.pack(
+                    req("repo_root"),
+                    req("query"),
+                    budget_tokens=arguments.get("budget_tokens"),
+                    scope=arguments.get("scope"),
+                )
+            case "project.timeline":
+                return self.service.timeline(
+                    req("repo_root"),
+                    since=arguments.get("since"),
+                    scope=arguments.get("scope"),
+                )
+            case "project.capture":
+                return self.service.capture(
+                    req("repo_root"),
+                    req("source"),
+                    req("input_format"),
+                    commit=bool(arguments.get("commit", False)),
+                )
+            case "project.locate_symbol_range":
+                return self.service.locate_symbol_range(
+                    req("repo_root"),
+                    req("symbol"),
+                    file=arguments.get("file"),
                 )
             case "project.explain":
                 return self.service.explain(
@@ -251,6 +277,64 @@ _TOOL_DEFS: list[dict[str, Any]] = [
                 "scope": {"type": "string"},
             },
             "required": ["repo_root", "query"],
+        },
+    },
+    {
+        "name": "project.pack",
+        "description": "Emit a token-budgeted JSON context bundle with scored sections (overview, subsystems, symbols, chunks, memories, edges) and dropped-section stats",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo_root": {"type": "string"},
+                "query": {"type": "string"},
+                "budget_tokens": {"type": "integer", "default": DEFAULT_BUDGET_TOKENS},
+                "scope": {"type": "string"},
+            },
+            "required": ["repo_root", "query"],
+        },
+    },
+    {
+        "name": "project.timeline",
+        "description": "Return chronological deltas across code (file_changed), memories (memory_added), and staleness (memory_stale)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo_root": {"type": "string"},
+                "since": {"type": "string", "description": "ISO timestamp or 'last_index' / 'last_refresh'. Omit for full history."},
+                "scope": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["code", "memory", "stale"]},
+                    "description": "Subset of event kinds to include. Defaults to all.",
+                },
+            },
+            "required": ["repo_root"],
+        },
+    },
+    {
+        "name": "project.capture",
+        "description": "Capture a transcript or pre-structured JSON into the memory store. Defaults to dry-run; set commit=true to persist.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo_root": {"type": "string"},
+                "source": {"type": "string", "description": "Path to file, or '-' for stdin"},
+                "input_format": {"type": "string", "enum": ["json", "claude-jsonl"]},
+                "commit": {"type": "boolean", "default": False},
+            },
+            "required": ["repo_root", "source", "input_format"],
+        },
+    },
+    {
+        "name": "project.locate_symbol_range",
+        "description": "Locate symbol byte/line ranges by name. Returns all matches with disambiguation scores; no edits.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo_root": {"type": "string"},
+                "symbol": {"type": "string", "description": "Symbol name or dotted path (Class.method)"},
+                "file": {"type": "string", "description": "Optional fnmatch glob to restrict files"},
+            },
+            "required": ["repo_root", "symbol"],
         },
     },
     {

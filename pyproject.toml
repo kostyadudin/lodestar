@@ -3,22 +3,31 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lodestar"
-version = "0.1.0"
-description = "Local-first repository context tool for agents."
+name = "lodestar-mcp"
+version = "0.2.0"
+description = "Local-first repository context tool for LLM agents — MCP server with SQLite/FTS5 index, symbol-aware ranking, token-budgeted packs, and durable memory."
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
-  { name = "Tino" }
+  { name = "Kostya Dudin", email = "duke40k@gmail.com" }
 ]
 license = { text = "MIT" }
-keywords = ["agents", "mcp", "sqlite", "indexing", "context"]
+keywords = ["agents", "mcp", "sqlite", "indexing", "context", "claude", "llm"]
 classifiers = [
+  "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
   "License :: OSI Approved :: MIT License",
-  "Operating System :: OS Independent"
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Intended Audience :: Developers"
 ]
+
+[project.urls]
+Homepage = "https://github.com/kostyadudin/lodestar"
+Repository = "https://github.com/kostyadudin/lodestar"
+Issues = "https://github.com/kostyadudin/lodestar/issues"
+Changelog = "https://github.com/kostyadudin/lodestar/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 embeddings = [

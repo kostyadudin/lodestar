@@ -11,3 +11,5 @@ venv/
 *.pyc
 *.local.*
 .mcp.json
+dist/
+build/

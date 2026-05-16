@@ -60,6 +60,26 @@ ROLE_SCORE_BOOST: dict[str, float] = {
     "agent-guidance": 0.6,
 }
 
+# Ranking-v2: kind-aware multipliers favouring definitions over generic windows.
+SYMBOL_KIND_BOOST: dict[str, float] = {
+    "class": 1.30,
+    "function": 1.25,
+    "method": 1.25,
+    "interface": 1.20,
+    "symbol": 1.10,
+    "section": 0.95,
+}
+
+# Ranking-v2: graph-proximity bonus is additive per matched edge, capped to avoid runaway boosts.
+GRAPH_PROXIMITY_PER_EDGE = 0.05
+GRAPH_PROXIMITY_CAP = 0.50
+
+# Ranking-v2: recency multipliers based on file updated_at relative to "now".
+RECENCY_BUCKETS: tuple[tuple[float, float], ...] = (
+    (7.0, 1.10),
+    (30.0, 1.03),
+)
+
 
 class LodestarService:
     """Core service used by the CLI and MCP surface."""
@@ -226,13 +246,18 @@ class LodestarService:
         if not query_terms:
             return {"results": [], "elapsed_ms": 0}
 
-        cache_key = self._search_cache_key(query, kind, effective_limit)
+        cache_key = self._search_cache_key(query, kind, effective_limit, cfg.ranking_v2)
         cached = self._get_cached_query(conn, cache_key)
         if cached is not None:
             return cached
 
         bm25 = self._fts_scores(conn, query)
         semantic = self._semantic_scores(conn, query)
+
+        file_updated: dict[str, str] = {}
+        if cfg.ranking_v2:
+            file_updated = {row["path"]: row["updated_at"] for row in conn.execute("SELECT path, updated_at FROM files")}
+        now_dt = datetime.now(UTC)
 
         rows: list[SearchResult] = []
         for row in conn.execute("SELECT path, role, language, summary FROM files"):
@@ -241,6 +266,8 @@ class LodestarService:
             score += bm25.get(ref, 0.0)
             score += SEMANTIC_WEIGHT * semantic.get(ref, 0.0)
             score *= ROLE_SCORE_BOOST.get(row["role"], 1.0)
+            if cfg.ranking_v2:
+                score *= self._recency_factor(file_updated.get(row["path"]), now_dt)
             if kind and row["role"] != kind and row["language"] != kind:
                 score *= 0.5
             if score > 0:
@@ -267,6 +294,9 @@ class LodestarService:
             score += SEMANTIC_WEIGHT * semantic.get(row["symbol_id"], 0.0)
             if score > 0:
                 score = (score + 0.25) * ROLE_SCORE_BOOST.get(row["file_role"], 1.0)
+                if cfg.ranking_v2:
+                    score *= SYMBOL_KIND_BOOST.get(row["kind"], 1.0)
+                    score *= self._recency_factor(file_updated.get(row["path"]), now_dt)
                 rows.append(
                     SearchResult(
                         ref=row["symbol_id"],
@@ -297,6 +327,9 @@ class LodestarService:
                         summary=row["summary"],
                     )
                 )
+
+        if cfg.ranking_v2:
+            self._apply_graph_proximity(rows, conn)
 
         rows.sort(key=lambda item: (-item.score, item.kind, item.path, item.name))
         deduped: list[SearchResult] = []
@@ -399,6 +432,16 @@ class LodestarService:
         conn.commit()
         return context
 
+    def pack(
+        self,
+        repo_root: str,
+        query: str,
+        budget_tokens: int | None = None,
+        scope: str | None = None,
+    ) -> dict:
+        from . import pack as _pack
+        return _pack.build_pack(self, repo_root, query, budget_tokens=budget_tokens, scope=scope)
+
     def explain(self, repo_root: str, subject: str, depth: str | None = None) -> dict:
         t0 = time.perf_counter()
         del depth
@@ -434,9 +477,202 @@ class LodestarService:
             " VALUES(?, ?, ?, ?, ?, ?)",
             (title, summary, json.dumps(evidence), evidence_hash, created_at, created_at),
         )
+        self._embed_memory(conn, cursor.lastrowid, title, summary)
         self._clear_query_cache(conn)
         conn.commit()
         return {"memory_id": cursor.lastrowid, "title": title, "created_at": created_at, "last_validated_at": created_at}
+
+    def capture(
+        self,
+        repo_root: str,
+        source: str,
+        input_format: str,
+        commit: bool = False,
+    ) -> dict:
+        from . import capture as _capture
+        return _capture.capture(self, repo_root, source, input_format, commit=commit)
+
+    def locate_symbol_range(
+        self,
+        repo_root: str,
+        symbol: str,
+        file: str | None = None,
+    ) -> dict:
+        """Locate symbol definitions by name; return byte/line ranges with disambiguation scores."""
+        import fnmatch
+
+        t0 = time.perf_counter()
+        root = self._repo_root(repo_root)
+        conn = connect(self._ensure_state(root) / DB_FILENAME)
+
+        # Accept "Module.Class.method" or "symbol:..." — try exact match, then leaf, then suffix.
+        # Tree-sitter parsers store dotted names ("Class.method"), heuristics store bare leaves.
+        bare = symbol.removeprefix("symbol:")
+        leaf = bare.split(".")[-1]
+
+        rows = conn.execute(
+            "SELECT s.symbol_id, s.path, s.name, s.kind, s.signature, s.line_start, s.line_end, "
+            " COALESCE(f.language, 'text') AS lang "
+            "FROM symbols s LEFT JOIN files f ON s.path = f.path "
+            "WHERE s.name = ? OR s.name = ? OR s.name LIKE ?",
+            (bare, leaf, f"%.{leaf}"),
+        ).fetchall()
+
+        matches: list[dict] = []
+        for row in rows:
+            if file and not fnmatch.fnmatch(row["path"], file):
+                continue
+            byte_start, byte_end = self._byte_range(root, row["path"], row["line_start"], row["line_end"])
+            matches.append(
+                {
+                    "symbol_id": row["symbol_id"],
+                    "file": row["path"],
+                    "kind": row["kind"],
+                    "lang": row["lang"],
+                    "line_start": row["line_start"],
+                    "line_end": row["line_end"],
+                    "byte_start": byte_start,
+                    "byte_end": byte_end,
+                    "signature": row["signature"],
+                    "name": row["name"],
+                    "score": self._locate_score(bare, leaf, row["name"], row["path"], row["signature"] or ""),
+                }
+            )
+
+        matches.sort(key=lambda m: (-m["score"], m["file"], m["line_start"]))
+
+        return {
+            "symbol": symbol,
+            "file_glob": file,
+            "matches": matches,
+            "match_count": len(matches),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000),
+        }
+
+    @staticmethod
+    def _byte_range(root: Path, path: str, line_start: int, line_end: int) -> tuple[int | None, int | None]:
+        full = root / path
+        try:
+            text = full.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return (None, None)
+        lines = text.splitlines(keepends=True)
+        if not lines:
+            return (0, 0)
+        line_start = max(1, line_start)
+        line_end = max(line_start, min(len(lines), line_end))
+        prefix_bytes = sum(len(line.encode("utf-8")) for line in lines[: line_start - 1])
+        span_bytes = sum(len(line.encode("utf-8")) for line in lines[line_start - 1 : line_end])
+        return prefix_bytes, prefix_bytes + span_bytes
+
+    @staticmethod
+    def _locate_score(bare: str, leaf: str, name: str, path: str, signature: str) -> float:
+        # Exact match against the queried (possibly-dotted) name wins outright.
+        if name == bare:
+            return 1.0
+        # Bare lookup matches a bare-stored leaf — strong match.
+        if name == leaf and bare == leaf:
+            return 1.0
+        # Suffix match (e.g. lookup 'search' against stored 'LodestarService.search').
+        if name.endswith(f".{leaf}"):
+            # Boost when prior dotted segments of the lookup also appear in path/signature.
+            parts = bare.split(".")
+            if len(parts) <= 1:
+                return 0.7
+            text = f"{path} {signature} {name}".lower()
+            matched = sum(1 for p in parts[:-1] if p.lower() in text)
+            return round(0.6 + 0.4 * (matched / max(1, len(parts) - 1)), 3)
+        return 0.5
+
+    def timeline(
+        self,
+        repo_root: str,
+        since: str | None = None,
+        scope: list[str] | None = None,
+    ) -> dict:
+        """Chronological deltas across code, memories, and staleness.
+
+        scope kinds: code | memory | stale (default: all).
+        since: ISO timestamp, or aliases 'last_index' / 'last_refresh'. Empty/None
+        returns the full timeline.
+        """
+        t0 = time.perf_counter()
+        root = self._repo_root(repo_root)
+        conn = connect(self._ensure_state(root) / DB_FILENAME)
+        since_iso = self._resolve_since(conn, since)
+        requested = set(scope) if scope else {"code", "memory", "stale"}
+
+        events: list[dict] = []
+
+        if "code" in requested:
+            sql = "SELECT path, role, language, updated_at FROM files"
+            params: tuple = ()
+            if since_iso:
+                sql += " WHERE updated_at >= ?"
+                params = (since_iso,)
+            for row in conn.execute(sql, params):
+                events.append(
+                    {
+                        "kind": "file_changed",
+                        "ref": f'file:{row["path"]}',
+                        "at": row["updated_at"],
+                        "delta_summary": f'{row["role"]} {row["language"]} file changed',
+                    }
+                )
+
+        if "memory" in requested:
+            sql = "SELECT memory_id, title, created_at FROM memories"
+            params = ()
+            if since_iso:
+                sql += " WHERE created_at >= ?"
+                params = (since_iso,)
+            for row in conn.execute(sql, params):
+                events.append(
+                    {
+                        "kind": "memory_added",
+                        "ref": f'memory:{row["memory_id"]}',
+                        "at": row["created_at"],
+                        "delta_summary": f'Memory added: {row["title"]}',
+                    }
+                )
+
+        if "stale" in requested:
+            for row in conn.execute(
+                "SELECT memory_id, title, evidence_refs, evidence_hash, last_validated_at FROM memories"
+            ):
+                current_hash = self._evidence_hash(conn, json.loads(row["evidence_refs"]))
+                if current_hash == row["evidence_hash"]:
+                    continue
+                at = row["last_validated_at"] or ""
+                if since_iso and at and at < since_iso:
+                    continue
+                events.append(
+                    {
+                        "kind": "memory_stale",
+                        "ref": f'memory:{row["memory_id"]}',
+                        "at": at,
+                        "delta_summary": f'Memory drifted from evidence: {row["title"]}',
+                    }
+                )
+
+        events.sort(key=lambda e: e["at"] or "", reverse=True)
+
+        return {
+            "repo_root": str(root),
+            "since": since_iso or None,
+            "scope": sorted(requested),
+            "events": events,
+            "event_count": len(events),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000),
+        }
+
+    def _resolve_since(self, conn, since: str | None) -> str:
+        """Resolve aliases and return an ISO timestamp string (empty == unbounded)."""
+        if since == "last_index":
+            return self._get_meta(conn, "last_indexed_at") or ""
+        if since == "last_refresh":
+            return self._get_meta(conn, "last_refreshed_at") or self._get_meta(conn, "last_indexed_at") or ""
+        return since or ""
 
     def find_usages(self, repo_root: str, symbol: str, scope: str | None = None) -> dict:
         """Find all usages of a symbol across the indexed codebase."""
@@ -917,7 +1153,7 @@ class LodestarService:
         )
 
     def _rebuild_embeddings(self, conn, full: bool = False) -> None:
-        """Populate the embeddings table from files, symbols, and subsystems.
+        """Populate the embeddings table from files, symbols, subsystems, and memories.
 
         Skips refs whose content_hash already matches the stored row.
         When *full* is True, stale refs (no longer in the index) are pruned first.
@@ -936,6 +1172,10 @@ class LodestarService:
         for row in conn.execute("SELECT name, summary FROM subsystems"):
             h = sha256_bytes(row["summary"].encode("utf-8"))
             candidates.append((f'subsystem:{row["name"]}', row["summary"], h))
+        for row in conn.execute("SELECT memory_id, title, summary FROM memories"):
+            text = f'{row["title"]}\n{row["summary"]}'
+            h = sha256_bytes(text.encode("utf-8"))
+            candidates.append((f'memory:{row["memory_id"]}', text, h))
 
         if not candidates:
             return
@@ -965,6 +1205,58 @@ class LodestarService:
             stale = [row["ref"] for row in conn.execute("SELECT ref FROM embeddings") if row["ref"] not in valid_refs]
             for ref in stale:
                 conn.execute("DELETE FROM embeddings WHERE ref = ?", (ref,))
+
+    def _embed_memory(self, conn, memory_id: int, title: str, summary: str) -> None:
+        """Encode a memory body and upsert its vector into the embeddings table."""
+        if not embedder.available() or memory_id is None:
+            return
+        text = f"{title}\n{summary}"
+        h = sha256_bytes(text.encode("utf-8"))
+        ref = f"memory:{memory_id}"
+        existing = conn.execute(
+            "SELECT content_hash FROM embeddings WHERE ref = ? AND model = ?",
+            (ref, embedder.DEFAULT_MODEL),
+        ).fetchone()
+        if existing and existing["content_hash"] == h:
+            return
+        vectors = embedder.encode([text], embedder.DEFAULT_MODEL)
+        if not vectors:
+            return
+        conn.execute(
+            "INSERT OR REPLACE INTO embeddings(ref, vector, model, content_hash, created_at) VALUES (?,?,?,?,?)",
+            (ref, vectors[0], embedder.DEFAULT_MODEL, h, self._now()),
+        )
+
+    def _memory_semantic_scores(self, conn, query: str) -> dict[int, float]:
+        """Return normalized cosine scores keyed by memory_id."""
+        if not embedder.available():
+            return {}
+        query_vecs = embedder.encode([query], embedder.DEFAULT_MODEL)
+        if not query_vecs:
+            return {}
+        ref_vectors = [
+            (row["ref"], row["vector"])
+            for row in conn.execute(
+                "SELECT ref, vector FROM embeddings WHERE model = ? AND ref LIKE 'memory:%'",
+                (embedder.DEFAULT_MODEL,),
+            )
+        ]
+        if not ref_vectors:
+            return {}
+        raw = embedder.cosine_scores(query_vecs[0], ref_vectors)
+        if not raw:
+            return {}
+        max_score = max(raw.values())
+        if max_score <= 0:
+            return {}
+        scores: dict[int, float] = {}
+        for ref, value in raw.items():
+            try:
+                mid = int(ref.split(":", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            scores[mid] = value / max_score
+        return scores
 
     def _semantic_scores(self, conn, query: str) -> dict[str, float]:
         """Return normalized cosine similarity scores keyed by ref string.
@@ -1020,8 +1312,51 @@ class LodestarService:
             return {}
         return {k: v / max_score for k, v in raw.items()}
 
-    def _search_cache_key(self, query: str, kind: str | None, limit: int) -> str:
-        return sha256_bytes(f"search:{query}|{kind or ''}|{limit}".encode("utf-8"))
+    def _search_cache_key(self, query: str, kind: str | None, limit: int, ranking_v2: bool = True) -> str:
+        ranking = "v2" if ranking_v2 else "v1"
+        return sha256_bytes(f"search:{query}|{kind or ''}|{limit}|{ranking}".encode("utf-8"))
+
+    def _recency_factor(self, updated_at: str | None, now_dt: datetime) -> float:
+        if not updated_at:
+            return 1.0
+        try:
+            ts = datetime.fromisoformat(updated_at)
+        except ValueError:
+            return 1.0
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        age_days = (now_dt - ts).total_seconds() / 86400.0
+        for threshold, factor in RECENCY_BUCKETS:
+            if age_days < threshold:
+                return factor
+        return 1.0
+
+    def _apply_graph_proximity(self, rows: list[SearchResult], conn) -> None:
+        """Boost results whose refs share edges with other refs already in the set."""
+        if len(rows) < 2:
+            return
+        ref_set = {r.ref for r in rows}
+        placeholders = ",".join("?" * len(ref_set))
+        refs_tuple = tuple(ref_set)
+        edges = conn.execute(
+            f"SELECT source_ref, target_ref, weight FROM relations "
+            f"WHERE source_ref IN ({placeholders}) OR target_ref IN ({placeholders})",
+            refs_tuple + refs_tuple,
+        ).fetchall()
+        bonus: dict[str, float] = {}
+        for edge in edges:
+            s, t = edge["source_ref"], edge["target_ref"]
+            if s == t or s not in ref_set or t not in ref_set:
+                continue
+            inc = GRAPH_PROXIMITY_PER_EDGE * float(edge["weight"])
+            bonus[s] = bonus.get(s, 0.0) + inc
+            bonus[t] = bonus.get(t, 0.0) + inc
+        if not bonus:
+            return
+        for r in rows:
+            extra = bonus.get(r.ref, 0.0)
+            if extra:
+                r.score = round(r.score * (1.0 + min(extra, GRAPH_PROXIMITY_CAP)), 3)
 
     def _file_score(self, path: str, summary: str, role: str, language: str, query_terms: Counter[str]) -> float:
         exact = 0.0
@@ -1158,11 +1493,13 @@ class LodestarService:
             "SELECT memory_id, title, summary, evidence_refs, evidence_hash, created_at, last_validated_at"
             " FROM memories ORDER BY memory_id DESC"
         ).fetchall()
+        memory_semantic = self._memory_semantic_scores(conn, query)
         fresh: list[tuple[float, MemoryEntry]] = []
         stale: list[tuple[float, MemoryEntry]] = []
         for row in rows:
             is_stale = row["evidence_hash"] != self._evidence_hash(conn, json.loads(row["evidence_refs"]))
             score = cosineish_score(query_terms, f'{row["title"]} {row["summary"]}')
+            score += SEMANTIC_WEIGHT * memory_semantic.get(row["memory_id"], 0.0)
             if score <= 0 and query_terms:
                 continue
 

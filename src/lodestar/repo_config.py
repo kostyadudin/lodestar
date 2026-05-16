@@ -24,6 +24,8 @@ class RepoConfig:
     parser_overrides: dict[str, bool] = field(default_factory=dict)
     # Optional overrides for budget_tokens and limit used by retrieval methods
     retrieval_defaults: dict[str, int] = field(default_factory=dict)
+    # Symbol-aware ranking (kind/recency/graph-proximity boosts). Set false to fall back to v1.
+    ranking_v2: bool = True
 
     @classmethod
     def from_state(cls, state_path: Path) -> RepoConfig:
@@ -40,6 +42,7 @@ class RepoConfig:
             role_overrides=dict(data.get("role_overrides", {})),
             parser_overrides={k: bool(v) for k, v in data.get("parser_overrides", {}).items()},
             retrieval_defaults=dict(data.get("retrieval_defaults", {})),
+            ranking_v2=bool(data.get("ranking_v2", True)),
         )
 
     def is_excluded(self, rel_parts: tuple[str, ...]) -> bool:
