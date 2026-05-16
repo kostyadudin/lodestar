@@ -6,7 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.2.0] — 2026-05-16
+## [0.2.1] — 2026-05-16
+
+Distribution renamed from `lodestar-mcp` to `lodestar-context` to clear PyPI's
+name-similarity check against the unrelated, abandoned 2018 `Lodestar` package.
+Import path (`lodestar`) and CLI binaries (`lodestar`, `lodestar-mcp`) are
+unchanged; only `pip install` users are affected.
+
+### Changed
+
+- `pyproject.toml`: `name = "lodestar-context"`, version bump to 0.2.1.
+- README and release workflow updated to reference the new distribution name.
+
+## [0.2.0] — 2026-05-16 (unreleased — pre-rename)
 
 Distribution name changed to `lodestar-mcp` for PyPI. The import path remains
 `lodestar`; existing CLI commands (`lodestar`, `lodestar-mcp`) are unchanged.

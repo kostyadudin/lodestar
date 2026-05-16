@@ -56,7 +56,7 @@ class MCPServer:
                 "id": msg_id,
                 "result": {
                     "protocolVersion": "2025-11-25",
-                    "serverInfo": {"name": "lodestar", "version": "0.2.0"},
+                    "serverInfo": {"name": "lodestar", "version": "0.2.1"},
                     "capabilities": {"tools": {}},
                 },
             }

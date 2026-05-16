@@ -5,12 +5,12 @@ Lodestar is a local-first repository context tool for LLM agents. It builds a pe
 ## Install
 
 ```bash
-pip install lodestar-mcp                # primary install
-pip install "lodestar-mcp[parsers]"     # add tree-sitter parsers
-pip install "lodestar-mcp[embeddings]"  # add sentence-transformers dense retrieval
+pip install lodestar-context                # primary install
+pip install "lodestar-context[parsers]"     # add tree-sitter parsers
+pip install "lodestar-context[embeddings]"  # add sentence-transformers dense retrieval
 ```
 
-The package ships on PyPI as `lodestar-mcp`; the import path remains `lodestar`.
+The package ships on PyPI as `lodestar-context`; the import path remains `lodestar`.
 The `lodestar` and `lodestar-mcp` console scripts are available after install.
 
 ## Current scope
@@ -20,12 +20,12 @@ The `lodestar` and `lodestar-mcp` console scripts are available after install.
 - incremental refresh by file hash
 - repo overview generation
 - subsystem summaries
-- symbol extraction — heuristic baseline + optional tree-sitter for Python, JS, TS, Go, Rust, Java, Ruby, PHP (`pip install "lodestar-mcp[parsers]"`)
+- symbol extraction — heuristic baseline + optional tree-sitter for Python, JS, TS, Go, Rust, Java, Ruby, PHP (`pip install "lodestar-context[parsers]"`)
 - relation graph between files and symbols
 - search, retrieve, explain, remember, **pack**, **timeline**, **capture**, **locate-symbol** primitives
 - hybrid ranking — FTS5 BM25 (porter-stemmed) + exact token matching + cosine-style overlap + role-based boost (`source` ×1.3, `documentation` ×0.7) + optional dense semantic similarity
 - **symbol-aware ranking v2** — kind boosts (class/function > section), graph-proximity (results connected via relations get a bonus), and file-recency multipliers. Gate with `"ranking_v2": false` in `/.lodestar/config.json` to fall back to v1.
-- optional semantic retrieval via sentence-transformers embeddings (`pip install "lodestar-mcp[embeddings]"`) — covers files, symbols, subsystems **and memories**
+- optional semantic retrieval via sentence-transformers embeddings (`pip install "lodestar-context[embeddings]"`) — covers files, symbols, subsystems **and memories**
 - memory store with evidence-hash staleness detection, chunk-level evidence refs, `last_validated_at` freshness tracking, aggressive stale suppression, and dense memory recall
 - query result caching (retrieve and search)
 - repo-local configuration via `/.lodestar/config.json`
@@ -102,7 +102,7 @@ lodestar eval /path/to/repo --fixture /path/to/fixtures.json --top-k 10
 
 ## MCP
 
-After `pip install lodestar-mcp`, run the stdio server with:
+After `pip install lodestar-context`, run the stdio server with:
 
 ```bash
 lodestar-mcp
@@ -167,7 +167,7 @@ Supported tool names:
 
 - The baseline is intentionally standard-library-first so it can run without extra dependencies.
 - Search uses hybrid ranking: FTS5 BM25 (porter-stemmed) + exact token matching + cosine-style term overlap + role-based multipliers + optional dense semantic similarity + graph-neighbor expansion in `retrieve`.
-- Install `pip install lodestar[parsers]` to enable tree-sitter symbol extraction for Python, JS, TS, Go, Rust, Java, Ruby, and PHP. Without it, Lodestar falls back to heuristic regex parsing. Tree-sitter gives accurate `ClassName.method` naming and proper nested scope handling.
-- Install `pip install lodestar[embeddings]` to enable dense semantic retrieval. This embeds file, symbol, and subsystem summaries using `all-MiniLM-L6-v2` (via `sentence-transformers`) and blends cosine similarity scores into every search and retrieve call. Useful for natural-language queries that don't share vocabulary with identifiers in the code.
+- Install `pip install "lodestar-context[parsers]"` to enable tree-sitter symbol extraction for Python, JS, TS, Go, Rust, Java, Ruby, and PHP. Without it, Lodestar falls back to heuristic regex parsing. Tree-sitter gives accurate `ClassName.method` naming and proper nested scope handling.
+- Install `pip install "lodestar-context[embeddings]"` to enable dense semantic retrieval. This embeds file, symbol, and subsystem summaries (and memory bodies) using `all-MiniLM-L6-v2` (via `sentence-transformers`) and blends cosine similarity scores into every search, retrieve, and memory-recall call. Useful for natural-language queries that don't share vocabulary with identifiers in the code.
 - Evidence refs passed to `remember` support `file:`, `symbol:`, and `chunk:` prefixes for increasingly precise staleness detection. Stale memories are suppressed in retrieval unless no fresh memories match the query.
 - The MCP server logs protocol-level failures (framing errors, unknown methods) to stderr. Tool execution errors are returned as `result.isError: true` per the MCP spec, not as JSON-RPC error objects.

@@ -3,8 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lodestar-mcp"
-version = "0.2.0"
+name = "lodestar-context"
+version = "0.2.1"
 description = "Local-first repository context tool for LLM agents — MCP server with SQLite/FTS5 index, symbol-aware ranking, token-budgeted packs, and durable memory."
 readme = "README.md"
 requires-python = ">=3.12"
